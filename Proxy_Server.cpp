@@ -6,11 +6,15 @@
 #include "Proxy_Server.h"
 #include "afxsock.h"
 #include <string>
+#include <vector>
+#include <sstream>
+
 
 
 #ifdef _DEBUG
 #define new DEBUG_NEW
 #endif
+
 
 /* Define mot so tu khoa */
 #define PORT 8888
@@ -18,6 +22,11 @@
 #define USER_AGENT "HTMLGET 1.0"
 #define PAGE "/"
 #define HTTP "http://"
+#define BlacklistFile "blacklist.conf" 
+
+
+
+using namespace std;
 
 /*Khai bao cac ham */
 //Ham khoi tao Server
@@ -28,17 +37,22 @@ UINT ClientToProxy(LPVOID pParam);
 UINT ProxytoRemoteServer(LPVOID pParam);
 //Ham dong ket noi
 void CloseServer();
-//Ham lay dia chi host va tao querry tu truy van Client
+//Ham lay host va page tu truy van cua Client
+void getHostNPage(string buff, string &host, string &page);
+//Ham tao querry tu truy van Client
 char* build_GET_querry(char buff[]);
 //Ham lay IP tu host
 char *get_ip(char *host);
+//Ham Check Blacklist
+bool isInBlacklist(string host);
 
+
+string ForbiddenRequest =  "HTTP/1.0 403 Forbidden\r\n\Cache-Control: no-cache\r\n\Connection: close\r\n ";
 
 // The one and only application object
 
 CWinApp theApp;
 
-using namespace std;
 
 int main()
 {
@@ -58,11 +72,22 @@ int main()
         else
         {
             // TODO: code your application's behavior here.
+			
+			KhoiTaoServer();
 			while (true)
 			{
-				KhoiTaoServer();
 				Sleep(1000);
 			}
+			/*
+			string host, page;
+			string buf = "GET http://weevil.info HTML/1.0 ";
+			getHostNPage(buf, host, page);
+			if (isInBlacklist(host))
+			{
+				cout << "403 Error - Forbiden";
+			}
+			*/
+			
         }
     }
     else
@@ -172,6 +197,64 @@ UINT ClientToProxy(LPVOID pParam)
 	cout << "Nhan tu Client: " << endl;
 	cout << buffer;
 
+	//Lay host va kiem tra host co trong black list khong
+	bool check = FALSE;
+	string host, page;
+	getHostNPage(buffer, host, page);
+	if (isInBlacklist(host) && host !="")
+	{
+		cout << "403 Error - Forbiden";
+		valnum = send(client, ForbiddenRequest.c_str(), ForbiddenRequest.length(),0); // Gui Code 403 Forbidden den Client
+		cout << valnum;
+		check = TRUE;
+		Sleep(5000);
+	}
+	if (check == FALSE)
+	{
 
+	}
+
+
+	
 	return 0;
 }
+
+// Return 1 if host is in Blacklist, return 0 if not
+bool isInBlacklist(string host)
+{
+	
+	freopen(BlacklistFile, "rt", stdin);
+	string hostname;
+	while (cin >> hostname)
+	{
+		if (hostname.find(host) != string::npos)
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void getHostNPage(string buff, string &host, string &page)
+{
+	stringstream buffer(buff);
+	vector<string> res;
+	string token;
+	//res[0]: method, res[1]: host, res[2]: protocol, i.e:  GET http://weevil.info/abc HTML/1.0
+	for (int i = 0; i < 3; i++)
+	{
+		getline(buffer, token, ' ');
+		res.push_back(token); 
+	}
+	int pos = res[1].find(HTTP); // Tim vi tri cua chuoi "http://"
+	if (pos != string::npos)
+	{
+		//Chuoi substring la chuoi res[1] da bo chuoi "http://"
+		string substring = res[1].substr(pos+7, res[1].length()-7); 
+		//Lay host
+		host = substring.substr(0, substring.find(PAGE));
+		//Lay Page
+		page = substring.substr(substring.find(PAGE)+1, substring.length() - host.length());
+	}
+}
+
