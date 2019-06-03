@@ -1,4 +1,4 @@
-// Proxy_Server.cpp : Defines the entry point for the console application.
+﻿// Proxy_Server.cpp : Defines the entry point for the console application.
 //
 
 //Khai bao thu vien
@@ -17,7 +17,8 @@
 
 
 /* Define mot so tu khoa */
-#define PORT 8888
+#define HTTP_PORT 80
+#define Proxy_PORT 8888
 #define BSIZE 10000
 #define USER_AGENT "HTMLGET 1.0"
 #define PAGE "/"
@@ -26,7 +27,18 @@
 
 
 
+
 using namespace std;
+
+
+struct Socket_Param
+{
+	string hostAddr;
+	string page;
+	HANDLE handle;
+	SOCKET client;
+	SOCKET server;
+};
 
 /*Khai bao cac ham */
 //Ham khoi tao Server
@@ -40,14 +52,16 @@ void CloseServer();
 //Ham lay host va page tu truy van cua Client
 void getHostNPage(string buff, string &host, string &page);
 //Ham tao querry tu truy van Client
-char* build_GET_querry(char buff[]);
+char* build_GET_querry(const char* host, const char* page);
 //Ham lay IP tu host
-char *get_ip(char *host);
+char *get_ip(const char *host);
 //Ham Check Blacklist
 bool isInBlacklist(string host);
+//Ham chuyen doi char* sang LPCWSTR
+wchar_t *convertCharArrayToLPCWSTR(const char* charArray);
 
 
-string ForbiddenRequest =  "HTTP/1.0 403 Forbidden\r\n\Cache-Control: no-cache\r\n\Connection: close\r\n ";
+string ForbiddenRequest =  "HTTP/1.0 403 Forbidden\r\nContent-Type: text/html\r\n\r\n<!doctype html><html><body>You cannot access this website !</body></html>";
 
 // The one and only application object
 
@@ -76,17 +90,9 @@ int main()
 			KhoiTaoServer();
 			while (true)
 			{
-				Sleep(1000);
+				Sleep(2000);
 			}
-			/*
-			string host, page;
-			string buf = "GET http://weevil.info HTML/1.0 ";
-			getHostNPage(buf, host, page);
-			if (isInBlacklist(host))
-			{
-				cout << "403 Error - Forbiden";
-			}
-			*/
+
 			
         }
     }
@@ -114,17 +120,18 @@ void KhoiTaoServer()
 	}
 	
 	address.sin_family = AF_INET; //IPv4
-	address.sin_port = htons(PORT); //Port
-	address.sin_addr.s_addr = INADDR_ANY; //Local IP, for example: 172.0.0.1
+	address.sin_port = htons(Proxy_PORT); //Port
+	address.sin_addr.s_addr = INADDR_ANY; //Local IP
 
 	
-	//Tao Socket descriptor
+	//Tạo Socket descriptor
 	if ((serverfd = socket(AF_INET, SOCK_STREAM, 0)) == 0) 
 	{
 		cout << "Socket failed";
 		exit(0);
 	}
 
+	//Sử dụng lại Port 
 	char opt = '1';
 	int iRes = setsockopt(serverfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 	if (iRes == SOCKET_ERROR)
@@ -133,21 +140,21 @@ void KhoiTaoServer()
 		exit(0);
 	}
 
-	//bind socket server to PORT
+	//bind Socket 
 	if (bind(serverfd, (sockaddr*)&address, sizeof(address)) == SOCKET_ERROR)
 	{
 		cout << "Bind failed with error " << WSAGetLastError();
 		exit(0);
 	}
-	//Lang nghe cac ket noi
-	if (listen(serverfd, 5) < 0) //Lang nghe toi da 5 ket noi
+	cout << "Waiting for incoming connections..." << endl;
+	//Lắng nghe các kết nối
+	if (listen(serverfd, 5) < 0) //Lắng nghe tối đa 5 kết nối
 	{
 		cout << "Listen failed";
 		exit(0);
 	}
 
-	SOCKET gListen = serverfd;
-	//Bat dau Thread giao tiep giua Client va ProxyServer
+	//Khởi tạo Thread lắng nghe kết nối từ Client đến Proxy Server
 	AfxBeginThread(ClientToProxy, (LPVOID)serverfd);
 }
 
@@ -156,68 +163,151 @@ UINT ClientToProxy(LPVOID pParam)
 	SOCKET server = (SOCKET)pParam;
 	if (server == NULL)
 	{
-		return 1; //Failed 
+		return -1; //Failed 
 	}
 
-	SOCKET client;
+	SOCKET new_socket;
 	sockaddr_in addr;
 	int addrlen = sizeof(addr);
 	
 	//Truy cap moi
-	client = accept(server, (sockaddr*)&addr, &addrlen);
-	//Tao mot thread moi de nghe cac truy cap khac
+	new_socket = accept(server, (sockaddr*)&addr, &addrlen);
+	cout << "Connect accepted" << endl;
+
+	//Khởi tạo một thread để tiếp tục lắng nghe các kết nối khác
 	AfxBeginThread(ClientToProxy, pParam);
 
-	//Nhan truy van tu Client
-	char buffer[BSIZE];
+	//Nhận truy vấn từ Client
+	char client_sent[BSIZE];
 	int valnum; //so byte nhan duoc tu Client
-	valnum = recv(client, buffer, BSIZE, 0);
-	if (valnum == SOCKET_ERROR)
+	memset(client_sent, 0, BSIZE);
+	valnum = recv(new_socket, client_sent, BSIZE, 0);
+	if (valnum < 0)
 	{
-		cout << "Nhan truy van bi loi";
+		cout << "Received error";
 		exit(0);
 	}
 	if (valnum == 0)
 	{
-		cout << "Client ngung gui truy van";
+		cout << "Client dong ket noi...";
 		exit(0);
 	}
-	if (valnum >= BSIZE)
-	{
-		buffer[valnum - 1] = '\0';
-	}
-	else if (valnum > 0)
-	{
-		buffer[valnum] = '\0';
-	}
-	else
-		buffer[0] = '\0';
 
 	//Xuat cac truy van
-	cout << "Nhan tu Client: " << endl;
-	cout << buffer;
+	cout << "Client sent: " << endl;
+	cout << client_sent;
 
 	//Lay host va kiem tra host co trong black list khong
 	bool check = FALSE;
 	string host, page;
-	getHostNPage(buffer, host, page);
+	getHostNPage(client_sent, host, page);
 	if (isInBlacklist(host) && host !="")
 	{
-		cout << "403 Error - Forbiden";
-		valnum = send(client, ForbiddenRequest.c_str(), ForbiddenRequest.length(),0); // Gui Code 403 Forbidden den Client
-		cout << valnum;
+		cout << "403 Error - Forbiden" << endl;
+		valnum = send(new_socket, ForbiddenRequest.c_str(), ForbiddenRequest.size(),0); // Gui Code 403 Forbidden den Client
 		check = TRUE;
-		Sleep(5000);
+		Sleep(2000);
 	}
+	
+	//Gán dữ liệu cho Socket_Param
+	Socket_Param S;
+	S.server = server;
+	S.client = new_socket;
+	S.hostAddr = host;
+	S.page = page;
+	S.handle = CreateEvent(NULL, TRUE, FALSE, NULL);
+	
+	//Bắt đầu thread giao tiếp giữa Proxy và Web
 	if (check == FALSE)
 	{
+		AfxBeginThread(ProxytoRemoteServer, (LPVOID)&S);
+		//Đợi cho Proxy kết nối đến Web 
+		WaitForSingleObject(S.handle, 5000);
+		CloseHandle(S.handle);
+
 
 	}
-
-
-	
 	return 0;
 }
+
+UINT ProxytoRemoteServer(LPVOID pParam)
+{
+	Socket_Param* S = (Socket_Param*)pParam;
+	string host = S->hostAddr;
+	string page = S->page;
+	SOCKET client = S->client;
+	SOCKET server = S->server;
+	int port = HTTP_PORT;
+	
+	char* IP;
+	char * get_query;
+	int valnum;
+	char* buf=NULL;
+
+	IP = get_ip(host.c_str());
+	get_query = build_GET_querry(host.c_str(), page.c_str());
+
+	//Khoi tao socket client
+	CSocket s_client;
+	AfxSocketInit(NULL);
+	s_client.Create();
+	//Ket noi den Remote Server
+	if (s_client.Connect(convertCharArrayToLPCWSTR(IP), HTTP_PORT) < 0)
+	{
+		perror("Could not connect");
+		return 1;
+	}
+	else
+	{
+		cout << "Ket noi thanh cong" << endl;
+		valnum = s_client.Send(get_query, strlen(get_query), 0);
+		if (valnum == -1)
+		{
+			cout << "Khong the gui truy van den Server" << endl;
+			return 1;
+		}
+		//Nhan HTTP respond tu Server
+		memset(buf, 0, BSIZE);
+		valnum = s_client.Receive(buf, BSIZE, 0);
+		if (valnum == -1)
+		{
+			cout << "Khong the nhan respond tu Server";
+			return -1;
+		}
+		else
+		{
+			cout << buf;
+			//Gui HTTP respond den Client
+			valnum = send(client, buf, strlen(buf), 0);
+			{
+				if (valnum == -1)
+				{
+					cout << "Khong the gui den Client";
+					return 1;
+				}
+			}
+		}
+
+	}
+	s_client.Close();
+	
+	return 0;
+
+
+}
+
+
+
+/*
+CACHING
+  Kiểm tra nếu host không có trong catch
+	build_querry(host) --> buff2
+	lưu vào file buff2 --> gửi buff2 về chrome
+  Kiểm tra có
+     gửi request HTTP if_modified lên Server
+	  if not_modified --> lấy từ file gửi lại về chrome
+	  else cập nhật lại rồi sau đó gửi về chrome
+*/
 
 // Return 1 if host is in Blacklist, return 0 if not
 bool isInBlacklist(string host)
@@ -258,3 +348,44 @@ void getHostNPage(string buff, string &host, string &page)
 	}
 }
 
+
+char* build_GET_querry(const char *host, const char *page)
+{
+	char *query;
+	const char *getpage = page;
+	char *tpl = "GET /%s HTTP/1.0\r\nHost: %s\r\nUser-Agent: %s\r\n\r\n";
+	if (getpage[0] == '/') {
+		getpage = getpage + 1;
+		fprintf(stderr, "Removing leading \"/\", converting %s to %s\n", page, getpage);
+	}
+	// -5 is to consider the %s %s %s in tpl and the ending \0
+	query = (char *)malloc(strlen(host) + strlen(getpage) + strlen(USER_AGENT) + strlen(tpl) - 5);
+	sprintf_s(query, strlen(query) + 1, tpl, getpage, host, USER_AGENT);
+	return query;
+}
+
+char *get_ip(const char *host)
+{
+	struct hostent *hent;
+	int iplen = 15; //XXX.XXX.XXX.XXX
+	char *ip = (char *)malloc(iplen + 1);
+	memset(ip, 0, iplen + 1);
+	if ((hent = gethostbyname(host)) == NULL)
+	{
+		perror("Can't get IP");
+		exit(1);
+	}
+	if (inet_ntop(AF_INET, (void *)hent->h_addr_list[0], ip, iplen) == NULL)
+	{
+		perror("Can't resolve host");
+		exit(1);
+	}
+	return ip;
+}
+
+wchar_t *convertCharArrayToLPCWSTR(const char* charArray)
+{
+	wchar_t* wString = new wchar_t[4096];
+	MultiByteToWideChar(CP_ACP, 0, charArray, -1, wString, 4096);
+	return wString;
+}
