@@ -22,8 +22,8 @@
 /* Define mot so tu khoa */
 #define HTTP_PORT 80
 #define Proxy_PORT 8888
-#define BSIZE 10000
-#define USER_AGENT "HTMLGET 1.1"
+#define BSIZE 200000
+#define USER_AGENT "Mozilla/5.0"
 #define PAGE "/"
 #define HTTP "http://"
 #define BlacklistFile "blacklist.conf" 
@@ -57,7 +57,7 @@ void CloseServer();
 //Ham lay host va page tu truy van cua Client
 void getHostNPage(string buff, string &host, string &page);
 //Ham tao querry tu truy van Client
-char* build_GET_querry(const char* host, const char* page);
+string build_get_query(string host, string page);
 //Ham lay IP tu host
 char *get_ip(const char *host);
 //Ham loaf blacklist
@@ -66,11 +66,11 @@ void loadBlackList();
 bool isInBlacklist(string host);
 //Ham chuyen doi char* sang LPCWSTR
 wchar_t *convertCharArrayToLPCWSTR(const char* charArray);
-//
-string build_get_query(string host, string page);
+
+
 
 /* Khai bao bien toan cuc*/
-string ForbiddenRequest =  "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\n\r\n<!doctype html><html><body> <h1> <strong> 403 Forbidden </strong> </h1> <h3> You cannot access this website ! </h3></body></html>";
+string ForbiddenRequest =  "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Type: text/html\r\n\r\n<!doctype html><html><body> <h1> <strong> 403 Forbidden </strong> </h1> <h3> You cannot access this website ! </h3></body></html>";
 vector<string> blacklist;
 string website_HTML;
 
@@ -148,7 +148,7 @@ void KhoiTaoServer()
 	}
 	cout << "Waiting for incoming connections..." << endl;
 	//Lắng nghe các kết nối
-	if (listen(serverfd, 5) < 0) //Lắng nghe tối đa 5 kết nối
+	if (listen(serverfd, 10) < 0) //Lắng nghe tối đa 10 kết nối
 	{
 		cout << "Listen failed";
 		exit(0);
@@ -211,12 +211,16 @@ UINT ClientToProxy(LPVOID pParam)
 	}
 	else
 	{
-		Sleep(1000);
+		Sleep(2000);
 		string get_query = build_get_query(host, page);
 		cout << "QUERY IS: " << endl << get_query << endl;
 		char *IP = get_ip(host.c_str());
+		if (IP == NULL)
+		{
+			return -1;
+		}
 		cout << IP << endl;
-		char buf[BSIZE + 1];
+		char buf[BSIZE];
 
 		sockaddr_in server_info;
 		server_info.sin_family = AF_INET; //IPv4
@@ -240,24 +244,28 @@ UINT ClientToProxy(LPVOID pParam)
 			return -1;
 		}
 		//Get response from server
-		while ((valnum = recv(remote_server, buf, BSIZE, 0)) > 0)
+		valnum = recv(remote_server, buf, BSIZE, 0);
+		if (valnum <= 0)
 		{
-			int i = 0;
-			while (buf[i] >= 32 || buf[i] == '\n' || buf[i] == '\r')
-			{
-				website_HTML += buf[i];
-				i++;
-			}
+			cout << "Can't get data from server, error code: " << WSAGetLastError() << endl;
+			return -1;
 		}
-		cout << endl << "Server sent: " << endl << website_HTML << endl;
+		valnum >= BSIZE ? buf[valnum - 1] = '\0' : (valnum > 0 ? buf[valnum] = '\0' : buf[0] = '\0');
+		cout << "--------------------------------------------------------"<<endl;
+		cout << "Received: " << valnum << " data from server" << endl;
 		//Send response to browser
-		valnum = send(new_socket,website_HTML.c_str(), website_HTML.size(), 0);
-		if (valnum == SOCKET_ERROR)
+		valnum = send(new_socket,buf,strlen(buf),0);
+		if (valnum <=0)
 		{
 			cout << "Cannot send to browser: " << WSAGetLastError() << endl;
 			send(new_socket, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
 			return -1;
 		}
+		else
+		{
+			cout << host<< " sent " << valnum << " data to browser" << endl;
+		}
+		closesocket(new_socket);
 	}
 	return 0;
 }
@@ -406,21 +414,6 @@ void getHostNPage(string buff, string &host, string &page)
 	}
 }
 
-
-char* build_GET_querry(const char *host, const char *page)
-{
-	char *query;
-	const char *getpage = page;
-	char *tpl = "GET /%s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n\r\n";
-	if (getpage[0] == '/') {
-		getpage = getpage + 1;
-		fprintf(stderr, "Removing leading \"/\", converting %s to %s\n", page, getpage);
-	}
-	// -5 is to consider the %s %s %s in tpl and the ending \0
-	query = (char *)malloc(strlen(host) + strlen(getpage) + strlen(USER_AGENT) + strlen(tpl) - 5);
-	sprintf_s(query, strlen(query) + 1, tpl, getpage, host, USER_AGENT);
-	return query;
-}
 
 string build_get_query(string host, string page)
 {
