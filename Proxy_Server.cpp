@@ -1,5 +1,6 @@
-﻿// Proxy_Server.cpp : Defines the entry point for the console application.
-//
+﻿// HTTP Proxy_Server GET method with additional fuctions: multithread, blacklist
+// Author: Pham Hoang Phuoc Duy https://github.com/pduy99
+// Read README for more information
 
 //Khai bao thu vien
 #include "stdafx.h"
@@ -8,10 +9,7 @@
 #include <string>
 #include <vector>
 #include <sstream>
-
-
-
-
+#include <direct.h>
 
 
 #ifdef _DEBUG
@@ -22,11 +20,12 @@
 /* Define mot so tu khoa */
 #define HTTP_PORT 80
 #define Proxy_PORT 8888
-#define BSIZE 200000
+#define BSIZE 100000
 #define USER_AGENT "Mozilla/5.0"
 #define PAGE "/"
 #define HTTP "http://"
 #define BlacklistFile "blacklist.conf" 
+#define WebCachingFile "cache.conf"
 
 using namespace std;
 
@@ -34,19 +33,17 @@ using namespace std;
 /*Khai bao cac ham */
 //Ham khoi tao Server
 void KhoiTaoServer();
-//Ham giao tiep giua Client va Proxy
+//Ham giao lang nghe truy van tu Client
 UINT ClientToProxy(LPVOID pParam);
-//Ham giao tiep giua Proxy va remote Server
-UINT ProxytoRemoteServer(LPVOID pParam);
-//Ham dong ket noi
-void CloseServer();
+//Ham giao tiep giua Proxy voi Web Server
+UINT ProxyToServer(string host, string page, SOCKET sclient);
 //Ham lay host va page tu truy van cua Client
 void getHostNPage(string buff, string &host, string &page);
 //Ham tao querry tu truy van Client
 string build_get_query(string host, string page);
 //Ham lay IP tu host
 char *get_ip(const char *host);
-//Ham loaf blacklist
+//Ham load blacklist
 void loadBlackList();
 //Ham Check Blacklist
 bool isInBlacklist(string host);
@@ -58,7 +55,7 @@ wchar_t *convertCharArrayToLPCWSTR(const char* charArray);
 /* Khai bao bien toan cuc*/
 string ForbiddenRequest =  "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Type: text/html\r\n\r\n<!doctype html><html><body> <h1> <strong> 403 Forbidden </strong> </h1> <h3> You cannot access this website ! </h3></body></html>";
 vector<string> blacklist;
-string website_HTML;
+
 
 // The one and only application object
 
@@ -83,6 +80,13 @@ int main()
         else
         {
             // TODO: code your application's behavior here.
+			cout << "Starting server...";
+			Sleep(2000);
+			cout << "Done!" << endl;
+			cout << "Loading blacklist..." << endl;
+			Sleep(1000);
+			loadBlackList();  
+			Sleep(1000);
 			KhoiTaoServer();
 			while (true)
 			{
@@ -115,10 +119,6 @@ void KhoiTaoServer()
 	address.sin_family = AF_INET; //IPv4
 	address.sin_port = htons(Proxy_PORT); //Port
 	address.sin_addr.s_addr = INADDR_ANY; //Local IP
-
-	//Load blacklist
-	loadBlackList();
-
 	//Tạo Socket descriptor
 	if ((serverfd = socket(AF_INET, SOCK_STREAM, 0)) == 0) 
 	{
@@ -197,78 +197,11 @@ UINT ClientToProxy(LPVOID pParam)
 	}
 	else
 	{
-		Sleep(2000);
-		string get_query = build_get_query(host, page);
-		cout << "QUERY IS: " << endl << get_query << endl;
-		char *IP = get_ip(host.c_str());
-		if (IP == NULL)
-		{
-			return -1;
-		}
-		cout << IP << endl;
-		char buf[BSIZE];
-
-		sockaddr_in server_info;
-		server_info.sin_family = AF_INET; //IPv4
-		server_info.sin_port = htons(HTTP_PORT); //Port
-		server_info.sin_addr.s_addr = inet_addr(IP); //The IP of Server got above
-
-		SOCKET remote_server = socket(AF_INET, SOCK_STREAM, 0);
-		if (connect(remote_server, (sockaddr*)&server_info, sizeof(server_info)) == SOCKET_ERROR)
-		{
-			cout << "Cannot connect to " << host << " error code: " << WSAGetLastError() << endl;
-			send(new_socket, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
-			return -1;
-		}
-		//Send query to server
-		valnum = send(remote_server, get_query.c_str(), get_query.size(), 0);
-		if (valnum == SOCKET_ERROR)
-		{
-			cout << "Send to sever error with code: " << WSAGetLastError() << endl;
-			send(new_socket, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
-
-			return -1;
-		}
-		//Get response from server and send them to browser
-		while (true)
-		{
-			valnum = recv(remote_server, buf, BSIZE, 0);
-			if (valnum <= 0)
-			{
-				cout << "Can't get data from server, error code: " << WSAGetLastError() << endl;
-				break;
-			}
-			valnum >= BSIZE ? buf[valnum - 1] = '\0' : (valnum > 0 ? buf[valnum] = '\0' : buf[0] = '\0');
-			cout << "--------------------------------------------------------" << endl;
-			cout << "Received: " << valnum << " data from server" << endl;
-			//Send response to browser
-			valnum = send(new_socket, buf, strlen(buf), 0);
-			if (valnum <= 0)
-			{
-				cout << "Cannot send to browser: " << WSAGetLastError() << endl;
-				send(new_socket, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
-				break;
-			}
-			else
-			{
-				cout << host << " sent " << valnum << " data to browser" << endl;
-			}
-		}
-		closesocket(new_socket);
+		ProxyToServer(host, page, new_socket);
 	}
 	return 0;
 }
 
-/*
-CACHING
-  Kiểm tra nếu host không có trong catch
-	build_querry(host) --> buff2
-	lưu vào file buff2 --> gửi buff2 về chrome
-  Kiểm tra có
-     gửi request HTTP if_modified lên Server
-	  if not_modified --> lấy từ file gửi lại về chrome
-	  else cập nhật lại rồi sau đó gửi về chrome
-*/
 void loadBlackList()
 {
 	if (freopen(BlacklistFile, "rt", stdin) == NULL)
@@ -276,6 +209,7 @@ void loadBlackList()
 		cout << "No Blacklist available" << endl;
 		return;
 	}
+	cout << "Load blacklist successfully!" << endl;
 	string hostname;
 	while (cin >> hostname)
 	{
@@ -359,4 +293,72 @@ wchar_t *convertCharArrayToLPCWSTR(const char* charArray)
 	wchar_t* wString = new wchar_t[4096];
 	MultiByteToWideChar(CP_ACP, 0, charArray, -1, wString, 4096);
 	return wString;
+}
+
+
+UINT ProxyToServer(string host, string page, SOCKET sclient)
+{
+	int valnum;
+	Sleep(2000);
+	string get_query = build_get_query(host, page);
+	cout << "QUERY IS: " << endl << get_query << endl;
+	char *IP = get_ip(host.c_str());
+	if (IP == NULL)
+	{
+		return -1;
+	}
+	cout << IP << endl;
+	char buf[BSIZE];
+
+	sockaddr_in server_info;
+	server_info.sin_family = AF_INET; //IPv4
+	server_info.sin_port = htons(HTTP_PORT); //Port
+	server_info.sin_addr.s_addr = inet_addr(IP); //The IP of Server got above
+
+	SOCKET remote_server = socket(AF_INET, SOCK_STREAM, 0);
+	if (connect(remote_server, (sockaddr*)&server_info, sizeof(server_info)) == SOCKET_ERROR)
+	{
+		cout << "Cannot connect to " << host << " error code: " << WSAGetLastError() << endl;
+		send(sclient, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
+		return -1;
+	}
+	else
+	{
+		//Send query to server
+		valnum = send(remote_server, get_query.c_str(), get_query.size(), 0);
+		if (valnum == SOCKET_ERROR)
+		{
+			cout << "Send to sever error with code: " << WSAGetLastError() << endl;
+			send(sclient, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
+
+			return -1;
+		}
+		//Get response from server and send them to browser
+		while (true)
+		{
+			valnum = recv(remote_server, buf, BSIZE, 0);
+			if (valnum <= 0)
+			{
+				cout << "Can't get data from server, error code: " << WSAGetLastError() << endl;
+				break;
+			}
+			valnum >= BSIZE ? buf[valnum - 1] = '\0' : (valnum > 0 ? buf[valnum] = '\0' : buf[0] = '\0');
+			cout << "--------------------------------------------------------" << endl;
+			cout << "Received: " << valnum << " data from server" << endl;
+			//Send response to browser
+			valnum = send(sclient, buf, strlen(buf), 0);
+			if (valnum <= 0)
+			{
+				cout << "Cannot send to browser: " << WSAGetLastError() << endl;
+				send(sclient, ForbiddenRequest.c_str(), sizeof(ForbiddenRequest), 0);
+				break;
+			}
+			else
+			{
+				cout << host << " sent " << valnum << " data to browser" << endl;
+			}
+		}
+		closesocket(sclient);
+	}
+	return 0;
 }
